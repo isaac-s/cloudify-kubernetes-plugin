@@ -64,40 +64,117 @@ jobs:
           paths:
             - build/*
 
+
   cloudify-manager:
-    docker:
-      - image: amd64/centos:centos7.3.1611
+    # This job tests first time user's getting started experience.
+    machine:
+      enabled: true
+      python:
+        version: pypy-2.2.1
+    environment:
+      CLOUDIFY_SSL_TRUST_ALL: true
     steps:
       - checkout
       - attach_workspace:
           at: workspace
       - run:
-          name: Install dependencies
-          command: yum -y install python-devel gcc openssl git libxslt-devel libxml2-devel openldap-devel libffi-devel openssl-devel libvirt-devel
+          name: "Pull Submodules"
+          command: |
+            git submodule init
+            git submodule update --remote
       - run:
-          name: Download pip
-          command: curl "https://bootstrap.pypa.io/get-pip.py" -o "get-pip.py"
+          name: update pip
+          command: pip install -U pip
       - run:
-          name: Install pip
-          command: python get-pip.py
-      - run:
-          name: Upgrade pip
-          command: pip install --upgrade pip==9.0.1
-      - run:
-          name: Install virtualenv
-          command: pip install virtualenv
-      - run:
-          name: Init virtualenv
-          command: virtualenv env
+          name: Install JQ
+          command: sudo apt-get install -y jq
       - run:
           name: install cloudify
-          command: pip install cloudify==4.3.2
+          command: pip install -U cloudify==5.0.0 pytest==4.6.3 pyyaml==3.10
       - run:
-          name: install test requirements
-          command: pip install nose https://github.com/cloudify-cosmo/cloudify-gcp-plugin/archive/1.4.3.zip https://github.com/cloudify-cosmo/cloudify-fabric-plugin/archive/1.5.1.zip https://github.com/cloudify-incubator/cloudify-utilities-plugin/archive/1.7.1.zip https://github.com/cloudify-incubator/cloudify-ecosystem-test/archive/2.1.1.zip
+          name: download manager docker image
+          command: wget http://repository.cloudifysource.org/cloudify/5.0.0/ga-release/cloudify-docker-manager-5.0.0.tar
       - run:
-          name: test 4.3.2
-          command: nosetests -s tests/test_kubernetes.py
+          name: load docker image
+          command: docker load -i cloudify-docker-manager-5.0.0.tar
+      - run:
+          name: retain space by dumping the tar
+          command: rm cloudify-docker-manager-5.0.0.tar
+      - run:
+          name: start docker container
+          description: This is the first user step, creating the manager.
+          command: docker run --name cfy_manager -d --restart unless-stopped -v /sys/fs/cgroup:/sys/fs/cgroup:ro --tmpfs /run --tmpfs /run/lock --security-opt seccomp:unconfined --cap-add SYS_ADMIN --network host cloudifyplatform/premium-cloudify-manager-aio
+      - run:
+          name: init CLI profile
+          description: The user now needs to initialize their CLI profile.
+          command: |
+            counter=0
+            until [ $counter -ge 15 ]
+            do
+                cfy profiles use localhost -u admin -p admin -t default_tenant && break
+                counter=$[$counter+1]
+                sleep 2
+            done
+      - run:
+          name: upload license
+          description: The user will not need to upload a license, they are most likely using cloudify community.
+          command: |
+            set +x
+            echo ${TEST_LICENSE} | base64 --decode > license.yaml
+            set -x
+            cfy license upload license.yaml
+      - run:
+          name: install plugins bundle
+          description: The user will need to upload all plugins.
+          command: |
+            cfy plugins bundle-upload
+            for plugin in `cfy executions list --include-system-workflows | grep install_plugin | awk '{print $2}'`; do cfy events list -vv $plugin; sleep 5; done
+      - run:
+          name: create iaas secrets
+          description: The user needs to create the secrets.
+          command: |
+
+            echo "${gcp_private_key}" | base64 --decode > gcp_key
+
+            cfy secrets create gcp_client_x509_cert_url -s ${gcp_client_x509_cert_url}
+            cfy secrets create gcp_client_email -s `echo "${gcp_client_email}" | base64 --decode`
+            cfy secrets create gcp_client_id -s `echo "${gcp_client_id}" | base64 --decode`
+            cfy secrets create gcp_project_id -s `echo "${gcp_project_id}" | base64 --decode`
+            cfy secrets create gcp_private_key_id -s `echo "${gcp_private_key_id}" | base64 --decode`
+            cfy secrets create gcp_private_key -f gcp_key
+            cfy secrets create gcp_region -s `echo "${gcp_region}" | base64 --decode`
+            cfy secrets create gcp_zone -s `echo "${gcp_zone}" | base64 --decode`
+
+      - run:
+          name: create agent secrets
+          description: >
+            These examples use Ansible to setup all applications. Since Ansible is primarily a SSH-centered tool, we need an SSH authentication method. We use key-based authentication, because it is easy to automate. In this step, we create the keys and then upload them as secrets.
+          command: |
+
+            ssh-keygen -t rsa -N '' -f foo.rsa
+            cfy secrets create agent_key_private -f foo.rsa
+            cfy secrets create agent_key_public -f foo.rsa.pub
+
+      - run:
+          name: Install GCP
+          description: the user executes gcp install.
+          command: |
+            DEP_ID=kuberetes-cluster
+            set +x
+            function cleanup()
+            {
+                EX_ID=`cfy executions list --include-system-workflows | grep install | grep $DEP_ID | awk '{print $2}'` -vv
+                cfy executions cancel $EX_ID
+                sleep 5
+                cfy uninstall $DEP_ID -p ignore_failure=true --force
+            }
+            trap cleanup EXIT
+            cfy install https://github.com/cloudify-community/blueprint-examples/releases/download/5.0.0-28/kubernetes.zip -n gcp.yaml -b $DEP_ID -vv
+            sleep 5
+            cfy uninstall $DEP_ID
+            trap EXIT
+            set -x
+
 
 workflows:
   version: 2
