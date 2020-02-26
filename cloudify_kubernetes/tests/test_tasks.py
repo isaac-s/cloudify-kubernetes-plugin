@@ -325,7 +325,7 @@ class TestTasks(unittest.TestCase):
     def test_do_resource_status_check_deployment(self):
         self._prepare_master_node()
         tasks._do_resource_status_check("Deployment", {
-            'status': {'conditions': [{'type': 'Available'}],
+            'status': {'conditions': [{'type': 'Available', 'status': 'True'}],
                        'unavailable_replicas': None}
         })
 
