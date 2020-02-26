@@ -91,7 +91,10 @@ class KubernetesIngressStatus(KubernetesServiceStatus):
 class KubernetesDeploymentStatus(KubernetesResourceStatus):
 
     def is_resource_ready(self):
-        if self.status['unavailable_replicas']:
+        # TODO: Check if the response is True or 'True' (bool or string)
+        resource_ready = all(
+            s['status'] is True for s in self.status['conditions'])
+        if not resource_ready:
             raise OperationRetry(self.status_message)
         return True
 

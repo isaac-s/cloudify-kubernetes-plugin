@@ -11,7 +11,7 @@ inputs:
 
   validate_status:
     type: boolean
-    default: false
+    default: true
 
 node_templates:
 
